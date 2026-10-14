@@ -23,6 +23,13 @@ derleme sırasında çalıştırıcıya geçici olarak çekilir. Expo/EAS derlem
 
 Derleme yaklaşık **25–30 dakika** sürer. Uygulama deposundaki her birleştirmeden sonra otomatik değil, **elle** tetiklenir.
 
+## TestFlight (EAS'siz)
+
+`ios-testflight.yml` imzalı bir build alır ve doğrudan App Store Connect / TestFlight'a yükler (Expo build kotası kullanılmaz).
+Xcode'un otomatik imzalaması App Store Connect API anahtarıyla çalışır, ayrıca `.p12` / profil dışa aktarmak gerekmez.
+Build numarası = `build_number_base` (varsayılan 1000) + çalışma numarası; App Store Connect'teki mevcut build'lerin üstünde kalmalıdır.
+Ek secret'lar: `ASC_API_KEY_P8`, `ASC_API_KEY_ID`, `ASC_API_ISSUER_ID`, `APPLE_TEAM_ID`.
+
 ## Gerekli secret'lar (Settings → Secrets and variables → Actions)
 
 | Ad | Açıklama |
