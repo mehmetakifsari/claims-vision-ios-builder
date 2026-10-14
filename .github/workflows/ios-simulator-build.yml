@@ -1,0 +1,130 @@
+name: iOS Simulator Build (private source)
+
+# This public repo holds only this workflow. It checks the private app repo out on the runner with a read-only token,
+# builds the iOS simulator app on GitHub's macOS runner (free for public repos) and uploads it straight to Appetize.
+# The built app is NOT uploaded as an artifact (artifacts of public repos can be downloaded by any GitHub user).
+# Manual runs only: no pull_request / push triggers, so forks can never reach the secrets.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or commit of the source repo"
+        required: false
+        default: "main"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-simulator-build
+  cancel-in-progress: true
+
+env:
+  SOURCE_REPO: mehmetakifsari/claims-vision-ios-app-2
+
+jobs:
+  build-ios-simulator:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Checkout the private source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ github.event.inputs.ref }}
+          token: ${{ secrets.SOURCE_REPO_TOKEN }}
+          persist-credentials: false
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "26.6"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Enable Corepack (pnpm)
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prebuild iOS native project
+        run: npx expo prebuild --platform ios
+
+      - name: Build for iOS Simulator
+        run: |
+          set -euo pipefail
+          WORKSPACE=$(find ios -maxdepth 1 -name "*.xcworkspace" | head -n1)
+          if [ -z "$WORKSPACE" ]; then
+            echo "No .xcworkspace found under ios/" >&2
+            exit 1
+          fi
+          SCHEME=$(xcodebuild -workspace "$WORKSPACE" -list | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag{print $1; exit}')
+          if [ -z "$SCHEME" ]; then
+            echo "Could not determine Xcode scheme" >&2
+            exit 1
+          fi
+          xcodebuild \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package .app into zip for Appetize.io
+        run: |
+          set -euo pipefail
+          APP_PATH=$(find build/Build/Products -maxdepth 2 -iname "*.app" | head -n1)
+          if [ -z "$APP_PATH" ]; then
+            echo "No .app bundle found in build output" >&2
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/output"
+          cd "$(dirname "$APP_PATH")"
+          zip -r -y "$RUNNER_TEMP/output/ios-simulator-app.zip" "$(basename "$APP_PATH")"
+
+      - name: Upload to Appetize.io
+        env:
+          APPETIZE_API_TOKEN: ${{ secrets.APPETIZE_API_TOKEN }}
+          APPETIZE_PUBLIC_KEY: ${{ secrets.APPETIZE_PUBLIC_KEY }}
+          BUNDLE_ID: com.claimsvision
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${APPETIZE_API_TOKEN:-}" ]; then
+            echo "::error::Missing secret APPETIZE_API_TOKEN"
+            exit 1
+          fi
+          SOURCE_SHA=$(git rev-parse --short HEAD)
+          TARGET="${APPETIZE_PUBLIC_KEY:-}"
+          if [ -z "$TARGET" ]; then
+            curl -fsS "https://api.appetize.io/v1/apps" -H "X-API-KEY: $APPETIZE_API_TOKEN" -o "$RUNNER_TEMP/apps.json"
+            TARGET=$(node -e '
+              const apps=(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).data||[])
+                .filter(a=>a.platform==="ios"&&a.bundle===process.argv[2])
+                .sort((a,b)=>String(b.updated||b.created).localeCompare(String(a.updated||a.created)));
+              console.log(apps[0]?.publicKey||"")' "$RUNNER_TEMP/apps.json" "$BUNDLE_ID")
+          fi
+          ENDPOINT="https://api.appetize.io/v1/apps"
+          if [ -n "$TARGET" ]; then
+            ENDPOINT="$ENDPOINT/$TARGET"
+            echo "Updating Appetize app $TARGET"
+          fi
+          curl -fsS "$ENDPOINT" \
+            -H "X-API-KEY: $APPETIZE_API_TOKEN" \
+            -F "file=@$RUNNER_TEMP/output/ios-simulator-app.zip" \
+            -F "platform=ios" \
+            -F "note=$SOURCE_SHA (GitHub macOS build, builder repo)" \
+            -o "$RUNNER_TEMP/appetize.json"
+          PUBLIC_KEY=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).publicKey)' "$RUNNER_TEMP/appetize.json")
+          echo "::notice::Appetize: https://appetize.io/app/$PUBLIC_KEY"
+          {
+            echo "### 🍎 iOS Simulator (Appetize)"
+            echo ""
+            echo "Open in the browser: https://appetize.io/app/$PUBLIC_KEY"
+          } >> "$GITHUB_STEP_SUMMARY"
