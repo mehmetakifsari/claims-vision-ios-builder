@@ -74,13 +74,19 @@ jobs:
           const b64 = (v) => Buffer.from(typeof v === "string" ? v : JSON.stringify(v)).toString("base64url");
           let key;
           try { key = crypto.createPrivateKey(pem); } catch { console.error("::error::ASC_API_KEY_P8 is not a valid private key (paste the whole .p8 content, BEGIN and END lines included; it must be the key from App Store Connect > Integrations > Keys, not an APNs key)"); process.exit(1); }
+          // Format checks only (no values are printed): a wrong paste shows up here before Apple answers 401.
+          const raw = { kid: process.env.ASC_API_KEY_ID, iss: process.env.ASC_API_ISSUER_ID };
+          console.log(`Key ID: length ${kid.length}, 10 letters/digits: ${/^[A-Z0-9]{10}$/.test(kid)}, had surrounding whitespace: ${raw.kid !== kid}`);
+          console.log(`Issuer ID: length ${iss.length}, UUID format: ${/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(iss)}, had surrounding whitespace: ${raw.iss !== iss}`);
+          console.log(`Key: type ${key.asymmetricKeyType}, curve ${key.asymmetricKeyDetails?.namedCurve} (App Store Connect keys are ec / prime256v1)`);
+          console.log(`Key text: ${pem.split("\n").filter(Boolean).length} lines, starts with BEGIN PRIVATE KEY: ${pem.trimStart().startsWith("-----BEGIN PRIVATE KEY-----")}`);
           const now = Math.floor(Date.now() / 1000);
           const head = b64({ alg: "ES256", kid, typ: "JWT" }), body = b64({ iss, iat: now, exp: now + 600, aud: "appstoreconnect-v1" });
           const jwt = `${head}.${body}.${crypto.sign("sha256", Buffer.from(`${head}.${body}`), { key, dsaEncoding: "ieee-p1363" }).toString("base64url")}`;
           const get = async (path) => { const r = await fetch(`https://api.appstoreconnect.apple.com${path}`, { headers: { Authorization: `Bearer ${jwt}` } }); return { status: r.status, json: await r.json().catch(() => ({})) }; };
           const apps = await get("/v1/apps?limit=1");
           console.log(`API check (/v1/apps): HTTP ${apps.status}`);
-          if (apps.status === 401) { console.error("::error::401 from App Store Connect: the Key ID, Issuer ID and .p8 do not belong together. Re-enter ASC_API_KEY_ID, ASC_API_ISSUER_ID and ASC_API_KEY_P8 from the SAME key (App Store Connect > Users and Access > Integrations > Keys; the file is AuthKey_<KeyID>.p8)."); process.exit(1); }
+          if (apps.status === 401) { console.error("::error::401 from App Store Connect: the Key ID, Issuer ID and .p8 do not belong together (or the key was created under Individual Keys, which has no Issuer ID: it must be a TEAM key). Re-enter ASC_API_KEY_ID, ASC_API_ISSUER_ID and ASC_API_KEY_P8 from the SAME key (App Store Connect > Users and Access > Integrations > Keys; the file is AuthKey_<KeyID>.p8)."); process.exit(1); }
           if (apps.status !== 200) { console.error(`::error::Unexpected HTTP ${apps.status}`); process.exit(1); }
           const certs = await get("/v1/certificates?limit=200");
           const types = {}; for (const c of certs.json.data ?? []) types[c.attributes.certificateType] = (types[c.attributes.certificateType] ?? 0) + 1;
