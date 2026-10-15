@@ -84,8 +84,17 @@ jobs:
           const head = b64({ alg: "ES256", kid, typ: "JWT" }), body = b64({ iss, iat: now, exp: now + 600, aud: "appstoreconnect-v1" });
           const jwt = `${head}.${body}.${crypto.sign("sha256", Buffer.from(`${head}.${body}`), { key, dsaEncoding: "ieee-p1363" }).toString("base64url")}`;
           const get = async (path) => { const r = await fetch(`https://api.appstoreconnect.apple.com${path}`, { headers: { Authorization: `Bearer ${jwt}` } }); return { status: r.status, json: await r.json().catch(() => ({})) }; };
+          // Enough of the ids to compare with the App Store Connect table by eye; not enough to use them.
+          console.log(`Key ID looks like: ${kid.slice(0, 2)}...${kid.slice(-2)}; Issuer ID starts with: ${iss.slice(0, 8)}`);
           const apps = await get("/v1/apps?limit=1");
-          console.log(`API check (/v1/apps): HTTP ${apps.status}`);
+          console.log(`API check (/v1/apps): HTTP ${apps.status}`, apps.status === 401 ? JSON.stringify((apps.json.errors ?? []).map((e) => e.code)) : "");
+          if (apps.status === 401) {
+            // An INDIVIDUAL key has no Issuer ID: its token carries sub=user instead of iss.
+            const body2 = b64({ iat: now, exp: now + 600, aud: "appstoreconnect-v1", sub: "user" });
+            const jwt2 = `${head}.${body2}.${crypto.sign("sha256", Buffer.from(`${head}.${body2}`), { key, dsaEncoding: "ieee-p1363" }).toString("base64url")}`;
+            const r2 = await fetch("https://api.appstoreconnect.apple.com/v1/apps?limit=1", { headers: { Authorization: `Bearer ${jwt2}` } });
+            console.log(`Individual-key check (sub=user, no issuer): HTTP ${r2.status}${r2.status === 200 ? "  -> this is an INDIVIDUAL key; create a TEAM key instead" : ""}`);
+          }
           if (apps.status === 401) { console.error("::error::401 from App Store Connect: the Key ID, Issuer ID and .p8 do not belong together (or the key was created under Individual Keys, which has no Issuer ID: it must be a TEAM key). Re-enter ASC_API_KEY_ID, ASC_API_ISSUER_ID and ASC_API_KEY_P8 from the SAME key (App Store Connect > Users and Access > Integrations > Keys; the file is AuthKey_<KeyID>.p8)."); process.exit(1); }
           if (apps.status !== 200) { console.error(`::error::Unexpected HTTP ${apps.status}`); process.exit(1); }
           const certs = await get("/v1/certificates?limit=200");
