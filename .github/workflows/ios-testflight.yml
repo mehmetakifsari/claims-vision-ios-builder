@@ -65,6 +65,7 @@ jobs:
           ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
           ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
           ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           # Calls the App Store Connect API with the key and prints ONLY status codes and counts (the repo is public, so no
           # names or ids go to the log). 200 = the key, Key ID and Issuer ID belong together; 401 = they do not.
@@ -105,6 +106,11 @@ jobs:
           const profiles = await get("/v1/profiles?limit=200");
           const kinds = {}; for (const c of profiles.json.data ?? []) kinds[c.attributes.profileType] = (kinds[c.attributes.profileType] ?? 0) + 1;
           console.log(`Profiles: HTTP ${profiles.status}`, JSON.stringify(kinds));
+          // Does APPLE_TEAM_ID belong to the team that owns the bundle id? Prints only true/false and counts.
+          const bid = await get("/v1/bundleIds?filter[identifier]=com.claimsvision&limit=5");
+          const seeds = (bid.json.data ?? []).filter((b) => b.attributes.identifier === "com.claimsvision").map((b) => b.attributes.seedId);
+          const team = (process.env.APPLE_TEAM_ID ?? "").trim();
+          console.log(`Bundle ID com.claimsvision: HTTP ${bid.status}, found ${seeds.length}, APPLE_TEAM_ID format ok: ${/^[A-Z0-9]{10}$/.test(team)} (length ${team.length}), matches the bundle id's team: ${seeds.includes(team)}`);
           JS
           node "$RUNNER_TEMP/asc-verify.mjs"
 
@@ -137,17 +143,12 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" "$PLIST"
           echo "Build number $BUILD, version $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST")"
 
-      - name: Archive (signed, automatic signing with the API key)
+      - name: Archive (unsigned; the distribution signing happens at export)
         env:
-          ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
-          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
-          ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
-          KEY="$RUNNER_TEMP/AuthKey_${ASC_API_KEY_ID}.p8"
-          printf '%s\n' "$ASC_API_KEY_P8" > "$KEY"
-          chmod 600 "$KEY"
+          TEAM=$(printf '%s' "$APPLE_TEAM_ID" | tr -d '[:space:]')
           WORKSPACE=$(find ios -maxdepth 1 -name "*.xcworkspace" | head -n1)
           SCHEME=$(xcodebuild -workspace "$WORKSPACE" -list | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag{print $1; exit}')
           echo "Workspace: $WORKSPACE, scheme: $SCHEME"
@@ -157,21 +158,21 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/App.xcarchive" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$KEY" \
-            -authenticationKeyID "$ASC_API_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_API_ISSUER_ID" \
-            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-            CODE_SIGN_STYLE=Automatic
+            DEVELOPMENT_TEAM="$TEAM" \
+            CODE_SIGNING_ALLOWED=NO
 
       - name: Export and upload to TestFlight
         env:
           ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
           ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
         run: |
           set -euo pipefail
           KEY="$RUNNER_TEMP/AuthKey_${ASC_API_KEY_ID}.p8"
+          printf '%s\n' "$ASC_API_KEY_P8" > "$KEY"
+          chmod 600 "$KEY"
+          APPLE_TEAM_ID=$(printf '%s' "$APPLE_TEAM_ID" | tr -d '[:space:]')
           cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
